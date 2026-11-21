@@ -283,46 +283,11 @@ Panel {
               textFormat: Text.PlainText
               text: !root.radio ? "" : root.radio.installed
                 ? "Your station runs on this computer. Start the studio to put it on air."
-                : "myradio is a radio station that runs on your graphics card: songs, a DJ and your agent on air. Install it with:"
+                : "myradio is a radio station that runs on your graphics card: songs, a DJ and your agent on air. Install it from myradio.garden, start it once, and it shows up here."
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
               lineHeight: 1.2
-            }
-
-            Rectangle {
-              visible: root.radio && !root.radio.installed
-              width: parent.width
-              height: installCmd.implicitHeight + Style.space(16)
-              radius: Style.cornerRadius
-              color: root.faint
-              Text {
-                id: installCmd
-                anchors.left: parent.left
-                anchors.right: copyBtn.left
-                anchors.margins: Style.space(10)
-                anchors.verticalCenter: parent.verticalCenter
-                textFormat: Text.PlainText
-                text: "curl -fsSL https://myradio.garden/install.sh | sh"
-                color: root.fg
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                elide: Text.ElideRight
-              }
-              PanelActionButton {
-                id: copyBtn
-                anchors.right: parent.right
-                anchors.rightMargin: Style.space(6)
-                anchors.verticalCenter: parent.verticalCenter
-                iconText: ""
-                tooltipText: "Copy"
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                onClicked: {
-                  Quickshell.execDetached(["wl-copy", installCmd.text])
-                  if (root.radio) root.radio.say("Copied the install command.", false)
-                }
-              }
             }
 
             Row {

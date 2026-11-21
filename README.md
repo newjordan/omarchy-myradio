@@ -23,11 +23,7 @@ The song, news and DJ features need a music maker and a DJ voice set up in the s
 
 ## Install
 
-Install myradio first:
-
-```sh
-curl -fsSL https://myradio.garden/install.sh | sh
-```
+Install myradio first, following [myradio.garden](https://myradio.garden) or a [release on GitHub](https://github.com/newjordan/myradio/releases), and start it once so it writes its control code.
 
 Then add the plugin and place it on the bar:
 
