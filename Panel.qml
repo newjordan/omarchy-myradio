@@ -281,7 +281,11 @@ Panel {
               width: parent.width
               wrapMode: Text.WordWrap
               textFormat: Text.PlainText
-              text: !root.radio ? "" : root.radio.installed
+              text: !root.radio ? "" : root.radio.reach === "foreign"
+                ? "Another account on this computer is using the studio's port, so nothing is sent to it. Stop that program or run the studio on another port."
+                : root.radio.reach === "unverified"
+                ? "Something answers on the studio's port but cannot prove it is your studio, so its replies are ignored and your control code is never sent. Update myradio to 0.5.0 or newer (on the station computer, if you use an SSH tunnel)."
+                : root.radio.installed
                 ? "Your station runs on this computer. Start the studio to put it on air."
                 : "myradio is a radio station that runs on your graphics card: songs, a DJ and your agent on air. Install it from myradio.garden, start it once, and it shows up here."
               color: root.fg
@@ -293,7 +297,7 @@ Panel {
             Row {
               spacing: Style.space(8)
               Button {
-                visible: root.radio && root.radio.installed
+                visible: root.radio && root.radio.installed && root.radio.reach !== "foreign" && root.radio.reach !== "unverified"
                 text: "Start myradio"
                 iconText: ""
                 bordered: true

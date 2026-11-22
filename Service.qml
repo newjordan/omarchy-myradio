@@ -17,7 +17,7 @@ Item {
   readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/myradio.json"
 
   // ---- Reachability and station state (from ctl.sh status).
-  property string reach: "offline"        // ok | offline | missing | foreign (port held by another account)
+  property string reach: "offline"        // ok | offline | missing | foreign (port held by another account) | unverified (reply not signed by the studio)
   property bool installed: false
   property bool listening: false
   property var status: null
@@ -177,8 +177,12 @@ Item {
   function nudgeVolume(steps) { setVolume(volume + steps * 5) }
 
   function openStudio() {
-    if (!online && reach !== "ok") { if (reach !== "foreign") launch(); return }
-    run(["open"])
+    if (!online && reach !== "ok") { if (reach !== "foreign" && reach !== "unverified") launch(); return }
+    run(["open"], function(code) {
+      if (code === 93) root.say("Another account holds the studio port, so nothing was sent.", true)
+      else if (code === 94) root.say("Could not verify the studio. Your control code was not sent. Update myradio to 0.5.0 or newer.", true)
+      else if (code !== 0) root.say("The studio is not reachable.", true)
+    })
   }
 
   function launch() {

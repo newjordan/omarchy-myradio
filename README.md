@@ -86,18 +86,22 @@ ssh -N -L 127.0.0.1:8765:127.0.0.1:8765 mini
 
 Then set `"dataDir"` to the full path of `~/.myradio-remote` in `~/.local/state/omarchy/myradio.json`. Keep the local port the same as the station's port; the studio checks it. To keep the tunnel up, run the `ssh` line as a systemd user service.
 
+The control code is never sent through the tunnel: requests are signed with it, and the studio signs its replies. If the studio is down and something else answers at the far end, it gets no code and the panel says it cannot verify the studio.
+
 ## How it works
 
-- The plugin talks to the studio's local API on `127.0.0.1:8765` with the control code in `~/.myradio/control.token`.
-- The control code only goes to your own studio. The plugin opens each connection itself, checks in `/proc/net/tcp` that the other end of that same connection belongs to your account (the studio, or your own SSH tunnel), and only then writes the code to it. If another account holds the port, the panel says so and the code is never sent. The code is written by the shell itself, so it never appears in the process list.
+- The plugin talks to the studio's local API on `127.0.0.1:8765`, using the control code in `~/.myradio/control.token`.
+- The control code is never sent anywhere. Each request is signed with it (HMAC-SHA256 over the request and a one-time challenge from the studio), and the studio answers with a signed reply. The plugin uses a reply only when its signature checks out. A program that is not your studio learns nothing it could reuse, and its replies are ignored.
+- The plugin also opens each connection itself and checks in `/proc/net/tcp` that the other end of that connection belongs to your account (the studio, or your own SSH tunnel). If another account holds the port, the panel says so and nothing is sent.
+- The signing is done by the shell itself, so the code never appears in the process list.
 - Listening plays the studio's live stream with `mpv`. If `mpv-mpris` is installed, Omarchy's media controls and media keys see it too.
 - Settings and recent requests are kept in `~/.local/state/omarchy/myradio.json`. To use a station in another data folder or on another port, set `"dataDir"` or `"port"` there.
-- Open studio opens the studio in your browser and copies its launch code to the clipboard for the studio's unlock screen. The code is not put in the address. The clipboard is cleared after a minute unless you have copied something else since.
+- Open studio asks the studio, with a signed request, for a login ticket that works once within a minute. It then opens the studio in your browser through a short page in your private runtime folder, so the ticket is never on a command line. The control code never goes to the browser, and nothing is copied to the clipboard.
 - The plugin itself only connects to your station. A news lookup is run by the station: its research service reads a Google News search for the topic.
 
 ## Requirements
 
-`jq`, `mpv`, `socat`, `wl-clipboard` and `libnotify`, which ship with Omarchy, and a running myradio studio.
+`jq`, `mpv` and `socat`, which ship with Omarchy, and a running myradio studio, version 0.5.0 or newer.
 
 ## License
 
