@@ -43,21 +43,29 @@ token() {
 
 # Open a connection to the studio on fd 3 and keep it only when the far end of
 # this very connection belongs to this account. /proc/net/tcp lists both ends of
-# a loopback connection with the uid that owns each socket (the server side
-# shows its owner even before it is accepted). With an SSH tunnel this is your
-# own ssh; the signed reply is what proves the studio behind it.
-#   0 = ours (fd 3 open)   1 = nothing is listening   2 = owned by someone else
+# a loopback connection with the uid that owns each socket; an established far
+# end shows its listener's owner even before it is accepted. A far end that is
+# already closing (an SSH tunnel whose studio is down drops the connection at
+# once) is orphaned and listed with uid 0, so it counts as nothing listening,
+# not as another account. With a tunnel the far end is your own ssh; the signed
+# reply is what proves the studio behind it.
+#   0 = ours (fd 3 open)   1 = nothing to talk to   2 = owned by another account
 studio_connect() {
   { exec 3<>"/dev/tcp/127.0.0.1/$PORT"; } 2>/dev/null || return 1
-  local ino mine peer=""
+  local ino mine peer="" uid state
   ino="$(readlink "/proc/$BASHPID/fd/3")"
   ino="${ino//[^0-9]/}"
   mine="$(awk -v i="$ino" '$10 == i { print $2; exit }' /proc/net/tcp)"
   [ -n "$mine" ] && peer="$(awk -v l="$(printf '0100007F:%04X' "$PORT")" -v r="$mine" \
-    '$2 == l && $3 == r { print $8; exit }' /proc/net/tcp)"
-  [ -n "$peer" ] && [ "$peer" = "$(id -u)" ] && return 0
+    '$2 == l && $3 == r { print $8, $4; exit }' /proc/net/tcp)"
+  read -r uid state <<<"$peer"
+  if [ "$state" = 01 ]; then              # established
+    [ "$uid" = "$(id -u)" ] && return 0
+    exec 3>&-
+    return 2
+  fi
   exec 3>&-
-  return 2
+  return 1                                # gone or closing: nothing is there
 }
 
 # HMAC-SHA256 of $2 keyed with $1 (ASCII, at most 64 bytes), as hex. The key is
@@ -85,11 +93,11 @@ sha256_of() { local h; h="$(sha256sum)"; printf '%s' "${h%% *}"; }
 read_head() {
   local line name value
   CODE="" REPLY_AUTH="" LENGTH=""
-  IFS= read -r -t 8 line <&3 || return 7
+  IFS= read -r -t 8 line <&3 2>/dev/null || return 7
   CODE="${line#* }"
   CODE="${CODE%% *}"
   case "$CODE" in ''|*[!0-9]*) return 7 ;; esac
-  while IFS= read -r -t 8 line <&3; do
+  while IFS= read -r -t 8 line <&3 2>/dev/null; do
     line="${line%$'\r'}"
     [ -z "$line" ] && break
     name="${line%%:*}"
@@ -227,6 +235,7 @@ slim='{
   } else null end),
   generation: (.extensions.generation.status // null | if . then {
     configured, paused, headline, next_step,
+    warming: ([(.workers // [])[] | select(.ready != true) | (.roles // [])[]] | unique),
     roles: (.capabilities.roles // {}),
     fixture_roles: (.fixture_roles // []),
     jobs: (.jobs // {}),

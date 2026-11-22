@@ -44,11 +44,18 @@ Item {
   readonly property var history: online && status.history ? status.history : []
   readonly property var generation: online ? status.generation : null
   // Test-tone ("fixture") workers count too, so a test station can exercise requests.
+  // A role can be requested when its maker is ready, or still warming up (requests queue meanwhile).
+  function warmingRole(role) {
+    return !!generation && Array.isArray(generation.warming) && generation.warming.indexOf(role) >= 0
+  }
   function canRole(role) {
     if (!generation) return false
     if (generation.roles && generation.roles[role]) return true
+    if (warmingRole(role)) return true
     return Array.isArray(generation.fixture_roles) && generation.fixture_roles.indexOf(role) >= 0
   }
+  readonly property bool songWarming: warmingRole("song") && !(generation && generation.roles && generation.roles.song)
+  readonly property bool voiceWarming: warmingRole("update") && !(generation && generation.roles && generation.roles.update)
   readonly property bool canMakeSongs: canRole("song")
   readonly property bool canSpeak: canRole("update")
   readonly property int making: generation && generation.jobs ? (Number(generation.jobs.running) || 0) : 0

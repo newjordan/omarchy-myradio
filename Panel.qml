@@ -630,9 +630,11 @@ Panel {
               font.pixelSize: Style.font.body
               enabled: root.radio && (root.requestRole === "song" ? root.radio.canMakeSongs : root.radio.canSpeak)
               placeholderText: root.requestRole === "song"
-                ? (enabled ? "Genre, mood, what it is about" : "Add a music maker in the studio first")
+                ? (!enabled ? "Add a music maker in the studio first"
+                   : root.radio.songWarming ? "Genre, mood, what it is about (the maker is warming up)" : "Genre, mood, what it is about")
                 : (!enabled ? "Add a DJ voice in the studio first"
-                   : (root.radio.director ? "A topic to look up, like Cerebras hackathon" : "A news line for the DJ to read"))
+                   : (root.radio.director ? "A topic to look up, like Cerebras hackathon" : "A news line for the DJ to read")
+                     + (root.radio.voiceWarming ? " (the voice is warming up)" : ""))
               Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Escape) {
                   requestField.text = ""
