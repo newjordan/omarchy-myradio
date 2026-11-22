@@ -2,18 +2,18 @@
 # Control helper for the myradio Omarchy plugin.
 #
 # Talks to the local myradio studio over its loopback API. The control token is
-# read from the studio's data folder and handed to curl through a file
-# descriptor, so it never appears in a process list. The token is only sent
-# when the socket listening on the studio port belongs to this account (or
-# root, which can read the token file anyway); see studio_is_ours.
+# read from the studio's data folder and only ever written to a connection whose
+# far end is owned by this account: studio_connect opens the connection, checks
+# its owner in /proc/net/tcp, and the request goes over that same connection.
+# The token is written by a shell builtin, so it never appears in a process list.
 #
 #   ctl.sh status              one JSON line: reachability, listener state, slim station status
 #   ctl.sh action <json>       POST /api/action with {"operation":..., "arguments":{...}}
-#   ctl.sh listen <volume>     start the local listener (curl | mpv) if it is not running
+#   ctl.sh listen <volume>     start the local listener (verified connection into mpv) if it is not running
 #   ctl.sh unlisten            stop the local listener
 #   ctl.sh volume <0-130>      set the listener volume
 #   ctl.sh title <text>        set the listener's media title (shown by MPRIS clients)
-#   ctl.sh open                open the studio in the browser
+#   ctl.sh open                open the studio in the browser and copy its launch code
 #   ctl.sh launch              start the studio (`myradio`), which opens the browser itself
 
 set -uo pipefail
@@ -25,6 +25,7 @@ BASE="http://127.0.0.1:$PORT"
 RUN="${XDG_RUNTIME_DIR:-/tmp}/omarchy-myradio-$(id -u)"
 SOCK="$RUN/mpv.sock"
 PIDF="$RUN/listen.pid"
+SELF="$(readlink -f "$0")"
 
 token() {
   local tok
@@ -33,36 +34,58 @@ token() {
   printf '%s' "$tok"
 }
 
-# True when something listens on the studio port and every listening socket on
-# it is owned by this account or root. Another local account could otherwise
-# bind the port while the studio (or its SSH tunnel) is down and collect the
-# token. Reads the uid column of /proc/net/tcp{,6} for this network namespace.
-studio_is_ours() {
-  local hex me uid found=1
-  hex="$(printf '%04X' "$PORT")"
-  me="$(id -u)"
-  while read -r uid; do
-    found=0
-    [ "$uid" = "$me" ] || [ "$uid" = 0 ] || return 2
-  done < <(awk -v p=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == p { print $8 }' \
-             /proc/net/tcp /proc/net/tcp6 2>/dev/null)
-  return "$found"
+# Open a connection to the studio on fd 3 and keep it only when the far end of
+# this very connection belongs to this account. /proc/net/tcp lists both ends of
+# a loopback connection with the uid that owns each socket (the server side
+# shows its owner even before it is accepted). Everything that carries the token
+# is written to fd 3 afterwards, so there is no moment between the check and the
+# use in which another account could take the port.
+#   0 = ours (fd 3 open)   1 = nothing is listening   2 = owned by someone else
+studio_connect() {
+  { exec 3<>"/dev/tcp/127.0.0.1/$PORT"; } 2>/dev/null || return 1
+  local ino mine peer=""
+  ino="$(readlink "/proc/$BASHPID/fd/3")"
+  ino="${ino//[^0-9]/}"
+  mine="$(awk -v i="$ino" '$10 == i { print $2; exit }' /proc/net/tcp)"
+  [ -n "$mine" ] && peer="$(awk -v l="$(printf '0100007F:%04X' "$PORT")" -v r="$mine" \
+    '$2 == l && $3 == r { print $8; exit }' /proc/net/tcp)"
+  [ -n "$peer" ] && [ "$peer" = "$(id -u)" ] && return 0
+  exec 3>&-
+  return 2
 }
 
-# GET or POST against the studio. Prints the body; exit status is curl's.
+# Send the request head (and body) on fd 3, then skip the response head.
+# Prints nothing; leaves the response body on fd 3. Exit: 0 when the status is
+# below 400, 22 otherwise, 7 when the studio does not answer.
+http_request() {
+  local method="$1" path="$2" tok="$3" body="${4:-}" line code req
+  printf -v req '%s %s HTTP/1.0\r\nHost: 127.0.0.1:%s\r\nX-Myradio-Token: %s\r\n' "$method" "$path" "$PORT" "$tok"
+  [ -n "$body" ] && printf -v req '%sContent-Type: application/json\r\nContent-Length: %s\r\n' \
+    "$req" "$(printf '%s' "$body" | wc -c)"
+  printf '%s\r\n%s' "$req" "$body" >&3 2>/dev/null || return 7   # one write
+  IFS= read -r -t 8 line <&3 || return 7
+  code="${line#* }"
+  code="${code%% *}"
+  case "$code" in ''|*[!0-9]*) return 7 ;; esac
+  while IFS= read -r -t 8 line <&3; do
+    [ -z "${line%$'\r'}" ] && break
+  done
+  [ "$code" -lt 400 ] || return 22
+}
+
+# GET (no body) or POST against the studio. Prints the response body.
+# Exit: 0 ok, 22 HTTP error, 7 offline, 93 port owned by another account, 90 no token.
 api() {
-  local path="$1" body="${2:-}" tok
-  studio_is_ours || return 93
+  local path="$1" body="${2:-}" tok rc
   tok="$(token)" || return 90
-  if [ -n "$body" ]; then
-    curl -sS --max-time 8 --noproxy '*' \
-      -H @<(printf 'X-Myradio-Token: %s\n' "$tok") \
-      -H 'Content-Type: application/json' \
-      --data-binary "$body" "$BASE$path"
-  else
-    curl -fsS --max-time 4 --noproxy '*' \
-      -H @<(printf 'X-Myradio-Token: %s\n' "$tok") "$BASE$path"
-  fi
+  studio_connect
+  case $? in 0) ;; 2) return 93 ;; *) return 7 ;; esac
+  http_request "$([ -n "$body" ] && echo POST || echo GET)" "$path" "$tok" "$body"
+  rc=$?
+  [ "$rc" = 7 ] || timeout 8 cat <&3
+  exec 3>&-
+  [ -n "$body" ] && [ "$rc" = 22 ] && rc=0   # an action's error reply is JSON the panel shows
+  return "$rc"
 }
 
 listening() {
@@ -116,14 +139,13 @@ case "${1:-}" in
       printf '{"reach":"missing","installed":%s,"listening":%s,"status":null}\n' "$installed" "$l"
       exit 0
     fi
-    studio_is_ours; owner=$?
-    if [ "$owner" = 2 ]; then
-      printf '{"reach":"foreign","installed":%s,"listening":%s,"status":null}\n' "$installed" "$l"
-      exit 0
-    fi
-    if body="$(api /api/status 2>/dev/null)"; then
+    body="$(api /api/status 2>/dev/null)"
+    rc=$?
+    if [ "$rc" = 0 ]; then
       slimmed="$(printf '%s' "$body" | jq -c "$slim" 2>/dev/null)" || slimmed=null
       printf '{"reach":"ok","installed":%s,"listening":%s,"status":%s}\n' "$installed" "$l" "${slimmed:-null}"
+    elif [ "$rc" = 93 ]; then
+      printf '{"reach":"foreign","installed":%s,"listening":%s,"status":null}\n' "$installed" "$l"
     else
       printf '{"reach":"offline","installed":%s,"listening":%s,"status":null}\n' "$installed" "$l"
     fi
@@ -136,18 +158,20 @@ case "${1:-}" in
     vol="${2:-80}"
     case "$vol" in ''|*[!0-9]*) vol=80 ;; esac
     token >/dev/null || exit 90
-    studio_is_ours || exit 93
     private_run_dir || exit 92
     rm -f "$SOCK"
-    # One process group (bash + curl + mpv) so unlisten can stop all of it.
-    setsid -f bash -c '
-      echo $$ > "$4"
-      tok="$(tr -d "[:space:]" < "$1/control.token")"
-      curl -sN --noproxy "*" -H @<(printf "X-Myradio-Token: %s\n" "$tok") "$2/stream.wav" \
-        | mpv --no-video --no-terminal --cache=no --volume="$3" \
-              --force-media-title=myradio --input-ipc-server="$5" -
-      rm -f "$4" "$5"
-    ' _ "$DATA" "$BASE" "$vol" "$PIDF" "$SOCK" >/dev/null 2>&1
+    # Its own process group (this script + mpv), so unlisten can stop all of it.
+    setsid -f bash -c 'echo $$ > "$2"; exec "$1" _stream "$3"' _ "$SELF" "$PIDF" "$vol" >/dev/null 2>&1
+    ;;
+  _stream)   # the listener process started by `listen`: a verified connection piped into mpv
+    vol="${2:-80}"
+    case "$vol" in ''|*[!0-9]*) vol=80 ;; esac
+    tok="$(token)" || exit 90
+    studio_connect || exit 93
+    http_request GET /stream.wav "$tok" || exit 7
+    mpv --no-video --no-terminal --cache=no --volume="$vol" \
+        --force-media-title=myradio --input-ipc-server="$SOCK" - <&3
+    rm -f "$PIDF" "$SOCK"
     ;;
   unlisten)
     if listening; then kill -- "-$(cat "$PIDF")" 2>/dev/null; fi
@@ -162,9 +186,18 @@ case "${1:-}" in
     mpv_cmd "$(jq -cn --arg t "${2:-myradio}" '{command:["set_property","force-media-title",$t]}')"
     ;;
   open)
-    studio_is_ours || exit 93
+    # The browser makes its own connection, so the code is never put in the
+    # address. Look at the studio first (nothing is sent), then open it and put
+    # the launch code on the clipboard for the studio's unlock screen; it is
+    # cleared after a minute unless something else was copied since.
     tok="$(token)" || exit 90
-    setsid -f xdg-open "$BASE/#token=$tok" >/dev/null 2>&1
+    studio_connect
+    case $? in 0) exec 3>&- ;; 2) exit 93 ;; *) exit 7 ;; esac
+    printf '%s' "$tok" | wl-copy 2>/dev/null &&
+      notify-send -a myradio "myradio" "Launch code copied. Paste it into the studio to unlock it." 2>/dev/null
+    setsid -f bash -c 'sleep 60; [ "$(wl-paste -n 2>/dev/null)" = "$(tr -d "[:space:]" < "$1/control.token")" ] && wl-copy --clear' \
+      _ "$DATA" >/dev/null 2>&1
+    setsid -f xdg-open "$BASE/" >/dev/null 2>&1
     ;;
   launch)
     command -v myradio >/dev/null 2>&1 || exit 91

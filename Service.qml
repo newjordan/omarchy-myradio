@@ -5,7 +5,7 @@ import qs.Commons
 import "Model.js" as Model
 
 // One instance per shell. Polls the local myradio studio, owns the listener
-// (curl | mpv, started through ctl.sh) and runs station actions. Every bar
+// (mpv on a verified connection, started through ctl.sh) and runs station actions. Every bar
 // widget, on every monitor, reads this object.
 Item {
   id: root

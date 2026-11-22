@@ -88,16 +88,16 @@ Then set `"dataDir"` to the full path of `~/.myradio-remote` in `~/.local/state/
 
 ## How it works
 
-- The plugin talks to the studio's local API on `127.0.0.1:8765` with the control code in `~/.myradio/control.token`. The code is passed to `curl` through a file descriptor, so it never appears in the process list.
-- Before sending the control code, the plugin checks who owns the socket listening on that port. It sends the code only when every listener there belongs to your account (the studio, or your own SSH tunnel) or to root. If another account holds the port, the panel says so, and the code is not sent.
+- The plugin talks to the studio's local API on `127.0.0.1:8765` with the control code in `~/.myradio/control.token`.
+- The control code only goes to your own studio. The plugin opens each connection itself, checks in `/proc/net/tcp` that the other end of that same connection belongs to your account (the studio, or your own SSH tunnel), and only then writes the code to it. If another account holds the port, the panel says so and the code is never sent. The code is written by the shell itself, so it never appears in the process list.
 - Listening plays the studio's live stream with `mpv`. If `mpv-mpris` is installed, Omarchy's media controls and media keys see it too.
 - Settings and recent requests are kept in `~/.local/state/omarchy/myradio.json`. To use a station in another data folder or on another port, set `"dataDir"` or `"port"` there.
-- Open studio opens the studio in your browser with the control code in the address, the same way myradio's own launcher does.
+- Open studio opens the studio in your browser and copies its launch code to the clipboard for the studio's unlock screen. The code is not put in the address. The clipboard is cleared after a minute unless you have copied something else since.
 - The plugin itself only connects to your station. A news lookup is run by the station: its research service reads a Google News search for the topic.
 
 ## Requirements
 
-`curl`, `jq`, `mpv` and `socat`, which ship with Omarchy, and a running myradio studio.
+`jq`, `mpv`, `socat`, `wl-clipboard` and `libnotify`, which ship with Omarchy, and a running myradio studio.
 
 ## License
 
