@@ -16,6 +16,7 @@ function mood(reach, status, making) {
 // What the station is doing, in one line.
 function stateLine(reach, installed, status, listening) {
   if (reach === "missing") return installed ? "Start myradio once to finish setup" : "myradio is not installed"
+  if (reach === "foreign") return "Another account holds the studio port"
   if (reach !== "ok" || !status) return "Studio is closed"
   var health = status.health || {}
   if (health.state === "fault") return "Station fault"

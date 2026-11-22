@@ -17,7 +17,7 @@ Item {
   readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/myradio.json"
 
   // ---- Reachability and station state (from ctl.sh status).
-  property string reach: "offline"        // ok | offline | missing
+  property string reach: "offline"        // ok | offline | missing | foreign (port held by another account)
   property bool installed: false
   property bool listening: false
   property var status: null
@@ -177,7 +177,7 @@ Item {
   function nudgeVolume(steps) { setVolume(volume + steps * 5) }
 
   function openStudio() {
-    if (!online && reach !== "ok") { launch(); return }
+    if (!online && reach !== "ok") { if (reach !== "foreign") launch(); return }
     run(["open"])
   }
 

@@ -3,7 +3,9 @@
 #
 # Talks to the local myradio studio over its loopback API. The control token is
 # read from the studio's data folder and handed to curl through a file
-# descriptor, so it never appears in a process list.
+# descriptor, so it never appears in a process list. The token is only sent
+# when the socket listening on the studio port belongs to this account (or
+# root, which can read the token file anyway); see studio_is_ours.
 #
 #   ctl.sh status              one JSON line: reachability, listener state, slim station status
 #   ctl.sh action <json>       POST /api/action with {"operation":..., "arguments":{...}}
@@ -31,9 +33,26 @@ token() {
   printf '%s' "$tok"
 }
 
+# True when something listens on the studio port and every listening socket on
+# it is owned by this account or root. Another local account could otherwise
+# bind the port while the studio (or its SSH tunnel) is down and collect the
+# token. Reads the uid column of /proc/net/tcp{,6} for this network namespace.
+studio_is_ours() {
+  local hex me uid found=1
+  hex="$(printf '%04X' "$PORT")"
+  me="$(id -u)"
+  while read -r uid; do
+    found=0
+    [ "$uid" = "$me" ] || [ "$uid" = 0 ] || return 2
+  done < <(awk -v p=":$hex" '$4 == "0A" && substr($2, length($2) - 4) == p { print $8 }' \
+             /proc/net/tcp /proc/net/tcp6 2>/dev/null)
+  return "$found"
+}
+
 # GET or POST against the studio. Prints the body; exit status is curl's.
 api() {
   local path="$1" body="${2:-}" tok
+  studio_is_ours || return 93
   tok="$(token)" || return 90
   if [ -n "$body" ]; then
     curl -sS --max-time 8 --noproxy '*' \
@@ -97,6 +116,11 @@ case "${1:-}" in
       printf '{"reach":"missing","installed":%s,"listening":%s,"status":null}\n' "$installed" "$l"
       exit 0
     fi
+    studio_is_ours; owner=$?
+    if [ "$owner" = 2 ]; then
+      printf '{"reach":"foreign","installed":%s,"listening":%s,"status":null}\n' "$installed" "$l"
+      exit 0
+    fi
     if body="$(api /api/status 2>/dev/null)"; then
       slimmed="$(printf '%s' "$body" | jq -c "$slim" 2>/dev/null)" || slimmed=null
       printf '{"reach":"ok","installed":%s,"listening":%s,"status":%s}\n' "$installed" "$l" "${slimmed:-null}"
@@ -112,6 +136,7 @@ case "${1:-}" in
     vol="${2:-80}"
     case "$vol" in ''|*[!0-9]*) vol=80 ;; esac
     token >/dev/null || exit 90
+    studio_is_ours || exit 93
     private_run_dir || exit 92
     rm -f "$SOCK"
     # One process group (bash + curl + mpv) so unlisten can stop all of it.
@@ -137,6 +162,7 @@ case "${1:-}" in
     mpv_cmd "$(jq -cn --arg t "${2:-myradio}" '{command:["set_property","force-media-title",$t]}')"
     ;;
   open)
+    studio_is_ours || exit 93
     tok="$(token)" || exit 90
     setsid -f xdg-open "$BASE/#token=$tok" >/dev/null 2>&1
     ;;
