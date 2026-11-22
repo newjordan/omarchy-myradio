@@ -127,6 +127,7 @@ Panel {
         if (t === "n") root.radio.skip()
         else if (t === "f") root.radio.fadeNext()
         else if (t === "o") root.radio.openStudio()
+        else if (t === "w") root.radio.windUp()
         else if (t === "a") root.radio.setAutopilot(!root.radio.autopilotOn)
         else if (t === "/" || t === "r") root.focusRequest()
         else if (t === "d") { root.setRole(root.requestRole === "song" ? "news" : root.requestRole === "news" ? "dj" : "song"); root.focusRequest() }
@@ -285,8 +286,10 @@ Panel {
                 ? "Another account on this computer is using the studio's port, so nothing is sent to it. Stop that program or run the studio on another port."
                 : root.radio.reach === "unverified"
                 ? "Something answers on the studio's port but cannot prove it is your studio, so its replies are ignored and your control code is never sent. Update myradio to 0.5.0 or newer (on the station computer, if you use an SSH tunnel)."
+                : root.radio.startCommand.length
+                ? "Your studio is shut down. Wind it up to start it, play and go live."
                 : root.radio.installed
-                ? "Your station runs on this computer. Start the studio to put it on air."
+                ? "Your station runs on this computer. Start the studio to put it on air, or wind it up to start, play and go live."
                 : "myradio is a radio station that runs on your graphics card: songs, a DJ and your agent on air. Install it from myradio.garden, start it once, and it shows up here."
               color: root.fg
               font.family: root.fontFamily
@@ -297,7 +300,20 @@ Panel {
             Row {
               spacing: Style.space(8)
               Button {
-                visible: root.radio && root.radio.installed && root.radio.reach !== "foreign" && root.radio.reach !== "unverified"
+                visible: root.radio && (root.radio.installed || root.radio.startCommand.length > 0)
+                         && root.radio.reach !== "foreign" && root.radio.reach !== "unverified"
+                text: root.radio && root.radio.winding ? "Winding up…" : "Wind up"
+                iconText: ""
+                iconSpinning: !!root.radio && root.radio.winding
+                tooltipText: "Start the studio, start playing and go live"
+                bordered: true
+                foreground: root.fg
+                fontFamily: root.fontFamily
+                onClicked: root.radio.windUp()
+              }
+              Button {
+                visible: root.radio && root.radio.installed && root.radio.startCommand.length === 0
+                         && root.radio.reach !== "foreign" && root.radio.reach !== "unverified"
                 text: "Start myradio"
                 iconText: ""
                 bordered: true
@@ -963,13 +979,13 @@ Panel {
 
             Item {
               width: parent.width
-              height: Math.max(footerText.implicitHeight, studioBtn.implicitHeight)
+              height: Math.max(footerText.implicitHeight, footerButtons.implicitHeight)
               visible: root.online
 
               Text {
                 id: footerText
                 anchors.left: parent.left
-                anchors.right: studioBtn.left
+                anchors.right: footerButtons.left
                 anchors.rightMargin: Style.space(8)
                 anchors.verticalCenter: parent.verticalCenter
                 textFormat: Text.PlainText
@@ -980,23 +996,59 @@ Panel {
                   var parts = [s.library_total + (s.library_total === 1 ? " track" : " tracks")]
                   if (s.stats && s.stats.on_air_seconds) parts.push(Model.hours(s.stats.on_air_seconds) + " on air")
                   if (root.radio.autopilotOn) parts.push("autopilot")
-                  if (s.broadcast === "live") parts.push("LIVE")
+                  if (s.broadcast === "streaming") parts.push("LIVE")
                   return parts.join("  ·  ")
                 }
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
               }
-              Button {
-                id: studioBtn
+              Row {
+                id: footerButtons
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Open studio"
-                iconText: ""
-                foreground: root.fg
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.radio.openStudio()
+                spacing: Style.space(4)
+
+                // Shown while the station is stopped, or while a saved broadcast is not live.
+                Button {
+                  visible: !!root.radio && !!root.radio.status && (root.radio.status.running !== true
+                           || (root.radio.status.broadcast_ready === true
+                               && ["streaming", "connecting", "retrying"].indexOf(root.radio.status.broadcast) < 0))
+                  text: root.radio && root.radio.winding ? "Winding up…" : "Wind up"
+                  iconText: ""
+                  iconSpinning: !!root.radio && root.radio.winding
+                  tooltipText: "Start the studio if needed, start playing and go live"
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.radio.windUp()
+                }
+                // Two clicks: the first arms it for a few seconds.
+                Button {
+                  id: offAirBtn
+                  property bool armed: false
+                  text: armed ? "Shut down?" : "Off air"
+                  iconText: ""
+                  tooltipText: "Stop the broadcast and playout, and shut the studio down"
+                  foreground: armed ? (root.bar ? root.bar.urgent : Commons.Color.urgent) : root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: {
+                    if (!armed) { armed = true; disarm.restart(); return }
+                    armed = false
+                    root.radio.offAir()
+                  }
+                  Timer { id: disarm; interval: 4000; onTriggered: offAirBtn.armed = false }
+                }
+                Button {
+                  id: studioBtn
+                  text: "Open studio"
+                  iconText: ""
+                  foreground: root.fg
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.bodySmall
+                  onClicked: root.radio.openStudio()
+                }
               }
             }
 

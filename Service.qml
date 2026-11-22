@@ -28,6 +28,7 @@ Item {
   property int songSeconds: 150
   property string dataDir: ""
   property string port: ""
+  property var startCommand: []          // words that start a studio on another computer, e.g. ["ssh","mini","launchctl","kickstart","gui/501/com.myradio"]
   property var requests: []               // [{key, job_id, role, text, state, track_id, queued, at}]
   property bool stateLoaded: false
 
@@ -67,6 +68,7 @@ Item {
     var e = {}
     if (dataDir) e.MYRADIO_DATA_DIR = dataDir
     if (port) e.MYRADIO_PORT = port
+    if (startCommand.length) e.MYRADIO_START_JSON = JSON.stringify(startCommand)
     return e
   }
 
@@ -185,10 +187,45 @@ Item {
     })
   }
 
+  property bool openWhenOnline: false
   function launch() {
     run(["launch"], function(code) {
       if (code === 91) root.say("myradio is not installed. Install it from myradio.garden.", true)
-      else { root.say("Starting myradio…", false); fastPoll.restart() }
+      else { root.say("Starting myradio…", false); root.openWhenOnline = true; fastPoll.restart() }
+    })
+  }
+
+  // Wind up: start the studio if it is down, start playing, and go live when a broadcast is set up.
+  property bool winding: false
+  function windUp() {
+    if (winding) return
+    winding = true
+    say("Winding up…", false)
+    fastPoll.restart()
+    run(["windup"], function(code, text) {
+      root.winding = false
+      var v = Model.parseState(text)
+      if (code === 91) root.say("Nothing to start the studio with. Install myradio, or set startCommand for a studio on another computer.", true)
+      else if (code === 93) root.say("Another account holds the studio port, so nothing was sent.", true)
+      else if (code === 94) root.say("Could not verify the studio. Your control code was not sent.", true)
+      else if (code !== 0) root.say("The studio did not answer.", true)
+      else if (v.ok === false) root.say(v.error || "The station could not start.", true)
+      else root.say(v.live ? "On air and live." : "On air.", false)
+      root.poll()
+    })
+  }
+
+  // Off air: stop the broadcast and playout, then shut the studio down.
+  function offAir() {
+    listening = false
+    say("Going off air…", false)
+    run(["shutdown"], function(code) {
+      if (code === 0) root.say("Off air. The studio is shut down.", false)
+      else if (code === 95) root.say("Off air. Shutting the studio down from here needs myradio 0.5.1 or newer.", true)
+      else if (code === 93) root.say("Another account holds the studio port, so nothing was sent.", true)
+      else if (code === 94) root.say("Could not verify the studio. Your control code was not sent.", true)
+      else root.say("The studio did not answer.", true)
+      root.poll()
     })
   }
 
@@ -491,6 +528,7 @@ Item {
       var nowId = status.current ? status.current.id : ""
       if (listening && nowId !== prevTitle) run(["title", Model.mediaTitle(status)])
     }
+    if (openWhenOnline && online) { openWhenOnline = false; openStudio() }
     if (hasOpenRequests) followRequests()
     syncDirectorRequests()
     if (online && hosts.length === 0 && !hostsAsked) { hostsAsked = true; loadHosts() }
@@ -547,6 +585,8 @@ Item {
     if (typeof s.songSeconds === "number") songSeconds = Math.max(30, Math.min(580, Math.round(s.songSeconds)))
     if (typeof s.dataDir === "string") dataDir = s.dataDir
     if (typeof s.port === "string" || typeof s.port === "number") port = String(s.port || "")
+    if (Array.isArray(s.startCommand) && s.startCommand.every(function(w) { return typeof w === "string" && w.indexOf("\n") < 0 }))
+      startCommand = s.startCommand
     if (Array.isArray(s.requests)) requests = s.requests.slice(0, 8)
     if (typeof s.hostId === "string" && s.hostId) hostId = s.hostId
     if (s.requestMode === "song" || s.requestMode === "news" || s.requestMode === "dj") requestMode = s.requestMode
@@ -557,7 +597,7 @@ Item {
   function saveState() {
     if (!stateLoaded) return
     stateFile.setText(JSON.stringify({
-      volume: volume, songSeconds: songSeconds, dataDir: dataDir, port: port, hostId: hostId, requestMode: requestMode, requests: requests
+      volume: volume, songSeconds: songSeconds, dataDir: dataDir, port: port, startCommand: startCommand, hostId: hostId, requestMode: requestMode, requests: requests
     }, null, 2) + "\n")
   }
 
@@ -569,6 +609,8 @@ Item {
     function toggle(): void { root.togglePlay() }
     function skip(): void { root.skip() }
     function studio(): void { root.openStudio() }
+    function windUp(): void { root.windUp() }
+    function offAir(): void { root.offAir() }
     function request(text: string): void { root.request("song", text) }
     function news(topic: string): void { root.news(topic) }
     function say(text: string): void { root.sayLine(text) }

@@ -16,7 +16,12 @@
 #   ctl.sh volume <0-130>      set the listener volume
 #   ctl.sh title <text>        set the listener's media title (shown by MPRIS clients)
 #   ctl.sh open                open the studio in the browser with a one-time login ticket
-#   ctl.sh launch              start the studio (`myradio`), which opens the browser itself
+#   ctl.sh launch              start the studio (`myradio --no-browser`); the panel then opens it
+#   ctl.sh windup              start the studio if it is down, start playing, go live if a broadcast is set up
+#   ctl.sh shutdown            go off air, stop playing and shut the studio down
+#
+# MYRADIO_START_JSON, when set, is a JSON array of words that starts a studio on
+# another computer, e.g. ["ssh","mini","launchctl","kickstart","gui/501/com.myradio"].
 
 set -uo pipefail
 
@@ -170,6 +175,22 @@ api() {
   return "$rc"
 }
 
+# Start the studio: a configured command for a studio on another computer, or
+# the local `myradio` without a browser (the panel opens it with a login ticket).
+# Exit: 0 started, 91 nothing to start with.
+start_studio() {
+  local -a cmd=()
+  if [ -n "${MYRADIO_START_JSON:-}" ]; then
+    mapfile -t cmd < <(jq -r 'if type == "array" and length > 0 and all(type == "string") then .[] else empty end' \
+      <<<"$MYRADIO_START_JSON" 2>/dev/null)
+    [ "${#cmd[@]}" -gt 0 ] || return 91
+  else
+    command -v myradio >/dev/null 2>&1 || return 91
+    cmd=(myradio --data-dir "$DATA" --port "$PORT" --no-browser)
+  fi
+  setsid -f "${cmd[@]}" >/dev/null 2>&1 </dev/null
+}
+
 listening() {
   [ -f "$PIDF" ] && kill -0 "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null
 }
@@ -198,6 +219,7 @@ slim='{
   stats: (.stats // {}),
   listeners: (.stream.listeners // 0),
   broadcast: (.broadcast.state // null),
+  broadcast_ready: (.broadcast.configured // false),
   director: (.extensions.director.status // null | if . then {
     enabled, waiting, placed, dropped,
     settings: ((.settings // {}) | {every_songs, station_id_minutes, news_minutes, hosts}),
@@ -292,11 +314,52 @@ case "${1:-}" in
     setsid -f bash -c 'sleep 30; rm -f "$1"' _ "$page" >/dev/null 2>&1
     ;;
   launch)
-    command -v myradio >/dev/null 2>&1 || exit 91
-    setsid -f myradio >/dev/null 2>&1
+    start_studio
+    ;;
+  windup)
+    # Start the studio if it is down, start playing, and go live when a
+    # broadcast destination is saved. Prints one JSON line with the outcome.
+    token >/dev/null || exit 90
+    api /api/status >/dev/null
+    rc=$?
+    case "$rc" in 0) ;; 90|92|93|94) exit "$rc" ;; *)
+      start_studio || exit $?
+      for ((i = 0; i < 45; i++)); do
+        sleep 2
+        api /api/status >/dev/null && break
+      done ;;
+    esac
+    status_json="$(api /api/status)" || exit $?
+    started=""
+    if [ "$(jq -r '.running' <<<"$status_json")" != true ]; then
+      started="$(api /api/action '{"operation":"transport.start","arguments":{}}')" || exit $?
+      err="$(jq -r '.error // empty' <<<"$started")"
+      [ -n "$err" ] && { jq -cn --arg e "$err" '{ok:false, error:$e}'; exit 0; }
+    fi
+    live=false
+    if [ "$(jq -r '.broadcast.configured' <<<"$status_json")" = true ]; then
+      case "$(jq -r '.broadcast.state' <<<"$status_json")" in
+        streaming|connecting|retrying) live=true ;;
+        *) reply="$(api /api/action '{"operation":"broadcast.start","arguments":{}}')" || exit $?
+           [ -z "$(jq -r '.error // empty' <<<"$reply")" ] && live=true ;;
+      esac
+    fi
+    jq -cn --argjson live "$live" '{ok:true, live:$live}'
+    ;;
+  shutdown)
+    # Off air first (so the studio does not come back playing), then shut it down.
+    if listening; then kill -- "-$(cat "$PIDF")" 2>/dev/null; fi
+    rm -f "$PIDF" "$SOCK"
+    api /api/action '{"operation":"broadcast.stop","arguments":{}}' >/dev/null || exit $?
+    api /api/action '{"operation":"transport.stop","arguments":{}}' >/dev/null || exit $?
+    reply="$(api /api/shutdown '{}')" || exit $?
+    [ "$(jq -r '.ok' <<<"$reply")" = true ] && exit 0
+    [ "$(jq -r '.error // empty' <<<"$reply")" = "Not found." ] && exit 95   # myradio older than 0.5.1
+    printf '%s\n' "$reply"
+    exit 22
     ;;
   *)
-    echo "usage: ctl.sh status|action <json>|listen [volume]|unlisten|volume <n>|title <text>|open|launch" >&2
+    echo "usage: ctl.sh status|action <json>|listen [volume]|unlisten|volume <n>|title <text>|open|launch|windup|shutdown" >&2
     exit 2
     ;;
 esac

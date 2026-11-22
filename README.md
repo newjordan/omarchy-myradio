@@ -15,6 +15,7 @@ myradio is a radio station that runs on your own graphics card: a music model wr
 - **The DJs.** Pick from the station's hosts. Give one a line to say on air, or ask for a time check, a station ID, a back-announce or an intro for the next song.
 - **Autopilot DJ.** One switch: the station writes intros for upcoming songs, station IDs and news on its own, and puts each one in front of the song it belongs to.
 - **The queue.** What plays next, with play next and remove.
+- **Wind up and Off air.** Wind up starts the studio if it is shut down, starts playing and goes live when a broadcast is set up in the studio. Off air stops the broadcast and playout and shuts the studio down (shutting down needs myradio 0.5.1); it asks for a second click first.
 - **Volume** from the panel, or by scrolling on the bar icon.
 - **Dial**, the myradio mascot, shows what the station is doing: asleep when the studio is closed, singing during a song, on air during a DJ break, excited while something is being made.
 - **The bar icon** is a small pixel radio. Its antenna lights up while the station is on air, and its screen shows a level meter while you listen.
@@ -59,6 +60,7 @@ This removes the plugin and its bar entry. Your station, its music and `~/.myrad
 | Panel | , and . | Previous and next DJ |
 | Panel | a | Autopilot DJ on or off |
 | Panel | o | Open the studio |
+| Panel | w | Wind up: start the studio, play and go live |
 
 From a script or a keybinding:
 
@@ -71,6 +73,8 @@ omarchy-shell newjordan.myradio say "Good morning to everyone up early."
 omarchy-shell newjordan.myradio dj station_id        # time_check, station_id, song_back_announce, song_intro
 omarchy-shell newjordan.myradio autopilot on         # on, off, or anything else to switch it
 omarchy-shell newjordan.myradio nowPlaying
+omarchy-shell newjordan.myradio windUp           # start the studio, play, go live
+omarchy-shell newjordan.myradio offAir           # stop the broadcast and playout, shut the studio down
 ```
 
 ## A station on another computer
@@ -85,6 +89,14 @@ ssh -N -L 127.0.0.1:8765:127.0.0.1:8765 mini
 ```
 
 Then set `"dataDir"` to the full path of `~/.myradio-remote` in `~/.local/state/omarchy/myradio.json`. Keep the local port the same as the station's port; the studio checks it. To keep the tunnel up, run the `ssh` line as a systemd user service.
+
+To wind up a studio on another computer, the plugin needs a command that starts it there. Add `"startCommand"` to `~/.local/state/omarchy/myradio.json` as a list of words, run as is without a shell. For a studio that runs as a launchd agent on a Mac:
+
+```json
+"startCommand": ["ssh", "mini", "launchctl", "kickstart", "gui/501/com.myradio.studio"]
+```
+
+If launchd keeps the studio alive, set `KeepAlive` to `{"SuccessfulExit": false}` so it restarts after a crash but stays down after Off air.
 
 The control code is never sent through the tunnel: requests are signed with it, and the studio signs its replies. If the studio is down and something else answers at the far end, it gets no code and the panel says it cannot verify the studio.
 
