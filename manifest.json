@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "newjordan.myradio",
   "name": "myradio",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "author": "Jordan Newman",
   "license": "Apache-2.0",
   "description": "Your myradio station in the Omarchy bar: listen, see what is on air, request songs, look up news and direct the DJs.",
