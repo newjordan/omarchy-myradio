@@ -31,6 +31,9 @@ Item {
   property var startCommand: []          // words that start a studio on another computer, e.g. ["ssh","mini","launchctl","kickstart","gui/501/com.myradio"]
   property var requests: []               // [{key, job_id, role, text, state, track_id, queued, at}]
   property bool stateLoaded: false
+  property double listenHoldUntil: 0
+  property bool stopping: false
+  property int requestSeq: 0
 
   // ---- Panels open on any monitor speed up polling.
   property int openPanels: 0
@@ -135,8 +138,22 @@ Item {
     })
   }
 
+  function guardPort() {
+    if (reach === "badport") {
+      say("Set the studio port to a number from 1 to 65535.", true)
+      return false
+    }
+    return true
+  }
+
+  function nextKey() {
+    requestSeq += 1
+    return Model.requestKey(Date.now(), requestSeq)
+  }
+
   // ---- Transport. Play means "let me hear it": start playout if needed, then listen.
   function play() {
+    if (!guardPort()) return
     if (!online) { launch(); return }
     if (!running) {
       action("transport.start", {}, function(reply) { if (!reply.error) listen() })
@@ -157,20 +174,32 @@ Item {
   function playNext(queueId) { action("queue.move", { queue_id: queueId, position: 0 }) }
 
   function listen() {
+    if (!guardPort()) return
     listening = true
-    run(["listen", String(volume)], function() {
-      run(["title", Model.mediaTitle(status)])
-      poll()
+    listenHoldUntil = Date.now() + 2500
+    run(["listen", String(volume)], function(code) {
+      if (code !== 0) {
+        root.listenHoldUntil = 0
+        root.listening = false
+        if (code === 90) root.say("Start myradio once to finish setup.", true)
+        else if (code === 94) root.say("Could not verify the studio, so playback did not start. Your control code was not sent.", true)
+        else if (code === 93) root.say("Another account holds the studio port, so nothing was sent.", true)
+        else if (code === 2) root.say("Set the studio port to a number from 1 to 65535.", true)
+        return
+      }
+      root.run(["title", Model.mediaTitle(root.status)])
+      root.poll()
     })
   }
 
   function unlisten() {
     listening = false
+    listenHoldUntil = 0
     run(["unlisten"], function() { poll() })
   }
 
   function setVolume(v) {
-    volume = Math.max(0, Math.min(130, Math.round(v)))
+    volume = Model.clampVolume(v)
     volumeDebounce.restart()
   }
 
@@ -186,7 +215,10 @@ Item {
   function nudgeVolume(steps) { setVolume(volume + steps * 5) }
 
   function openStudio() {
-    if (!online && reach !== "ok") { if (reach !== "foreign" && reach !== "unverified") launch(); return }
+    if (!guardPort()) return
+    if (reach === "foreign") { say("Another account holds the studio port, so nothing was sent.", true); return }
+    if (reach === "unverified") { say("Could not verify the studio. Your control code was not sent. Update myradio to 0.5.0 or newer.", true); return }
+    if (reach !== "ok") { launch(); return }
     run(["open"], function(code) {
       if (code === 93) root.say("Another account holds the studio port, so nothing was sent.", true)
       else if (code === 94) root.say("Could not verify the studio. Your control code was not sent. Update myradio to 0.5.0 or newer.", true)
@@ -196,8 +228,10 @@ Item {
 
   property bool openWhenOnline: false
   function launch() {
+    if (!guardPort()) return
     run(["launch"], function(code) {
       if (code === 91) root.say("myradio is not installed. Install it from myradio.garden.", true)
+      else if (code === 2) root.say("Set the studio port to a number from 1 to 65535.", true)
       else { root.say("Starting myradio…", false); root.openWhenOnline = true; fastPoll.restart() }
     })
   }
@@ -206,6 +240,7 @@ Item {
   property bool winding: false
   function windUp() {
     if (winding) return
+    if (!guardPort()) return
     winding = true
     say("Winding up…", false)
     fastPoll.restart()
@@ -215,6 +250,7 @@ Item {
       if (code === 91) root.say("Nothing to start the studio with. Install myradio, or set startCommand for a studio on another computer.", true)
       else if (code === 93) root.say("Another account holds the studio port, so nothing was sent.", true)
       else if (code === 94) root.say("Could not verify the studio. Your control code was not sent.", true)
+      else if (code === 2) root.say("Set the studio port to a number from 1 to 65535.", true)
       else if (code !== 0) root.say("The studio did not answer.", true)
       else if (v.ok === false) root.say(v.error || "The station could not start.", true)
       else root.say(v.live ? "On air and live." : "On air.", false)
@@ -224,13 +260,19 @@ Item {
 
   // Off air: stop the broadcast and playout, then shut the studio down.
   function offAir() {
+    if (stopping) return
+    if (!guardPort()) return
+    stopping = true
     listening = false
+    listenHoldUntil = 0
     say("Going off air…", false)
     run(["shutdown"], function(code) {
+      root.stopping = false
       if (code === 0) root.say("Off air. The studio is shut down.", false)
       else if (code === 95) root.say("Off air. Shutting the studio down from here needs myradio 0.5.1 or newer.", true)
       else if (code === 93) root.say("Another account holds the studio port, so nothing was sent.", true)
       else if (code === 94) root.say("Could not verify the studio. Your control code was not sent.", true)
+      else if (code === 2) root.say("Set the studio port to a number from 1 to 65535.", true)
       else root.say("The studio did not answer.", true)
       root.poll()
     })
@@ -239,9 +281,10 @@ Item {
   // ---- Requests: a song from a description, or a message the DJ reads on air.
   function request(role, text) {
     text = String(text || "").trim()
-    if (role === "song" && text.length < 3) { say("Describe the song in a few words.", true); return false }
     if (role === "update" && text.length < 1) return false
-    var key = "omarchy-" + Date.now().toString(36)
+    var problem = Model.requestIssue(role, text)
+    if (problem) { say(problem, true); return false }
+    var key = nextKey()
     var entry = { key: key, job_id: "", role: role, text: text, state: "sending", track_id: "", queued: false, at: Date.now() }
     requests = [entry].concat(requests).slice(0, 8)
     saveState()
@@ -330,31 +373,32 @@ Item {
     if (!online || following > 0) return
     for (var i = 0; i < requests.length; i++) {
       var r = requests[i]
-      if (r.director || !r.job_id || r.queued || (Model.jobDone(r) && r.state !== "succeeded")) continue
+      if (r.director || !Model.needsPoll(r) || r.queuing) continue
       following++
       ;(function(req) {
         root.action("generation.job", { job_id: req.job_id }, function(reply) {
           root.following = Math.max(0, root.following - 1)
-          var job = reply ? reply.job : null
-          if (!job || !job.state) return
-          var fields = { state: job.state, track_id: job.track_id || "", error: job.error || "" }
-          if (job.state === "succeeded" && job.track_id && !req.queued) {
-            fields.queued = true
-            root.action("queue.add", { track_id: job.track_id, position: 0 })
-            root.say(req.role === "song" ? "Your song is ready. It plays next." : "The DJ has it. It airs next.", false)
-          }
-          root.updateRequest(req.key, fields)
+          var plan = Model.followUpdate(req, reply ? reply.job : null)
+          if (!plan) return
+          root.updateRequest(req.key, plan.fields)
+          if (!plan.queueTrack) return
+          root.action("queue.add", { track_id: plan.queueTrack, position: 0 }, function(queued) {
+            if (queued && queued.error) {
+              root.updateRequest(req.key, { queuing: false, queued: false, error: queued.error })
+              root.say(queued.error, true)
+            } else {
+              root.updateRequest(req.key, { queuing: false, queued: true, error: "" })
+              root.say(req.role === "song" ? "Your song is ready. It plays next." : "The DJ has it. It airs next.", false)
+            }
+            root.poll()
+          }, true)
         }, true)
       })(r)
     }
   }
 
   readonly property bool hasOpenRequests: {
-    for (var i = 0; i < requests.length; i++) {
-      var r = requests[i]
-      if (!r.director && r.job_id && !r.queued && !Model.jobDone(r)) return true
-      if (r.director && (r.state === "looking" || r.state === "recording")) return true
-    }
+    for (var i = 0; i < requests.length; i++) if (Model.needsPoll(requests[i])) return true
     return false
   }
 
@@ -431,7 +475,7 @@ Item {
 
   // Voice a written script and put it on air next.
   function voice(role, script, speaker, label) {
-    var key = "omarchy-" + Date.now().toString(36)
+    var key = nextKey()
     var entry = { key: key, job_id: "", role: role, text: label, state: "sending", track_id: "", queued: false, at: Date.now(), host: host ? host.name : "" }
     requests = [entry].concat(requests).slice(0, 8)
     saveState()
@@ -453,10 +497,11 @@ Item {
     text = String(text || "").trim()
     if (text.length < 3) { say("Say what to look up in a few words.", true); return false }
     if (director) {
+      var topic = Model.clipNewsTopic(text)
       var h0 = host
-      action("director.news_now", h0 ? { topic: text, host: h0.id } : { topic: text }, function(reply) {
+      action("director.news_now", h0 ? { topic: topic, host: h0.id } : { topic: topic }, function(reply) {
         if (!reply || !reply.key) return
-        var entry = { key: reply.key, job_id: "", role: "news", text: text, state: "looking", track_id: "", queued: false,
+        var entry = { key: reply.key, job_id: "", role: "news", text: topic, state: "looking", track_id: "", queued: false,
                       at: Date.now(), host: h0 ? h0.name : "", director: true, message: reply.message || "" }
         root.requests = [entry].concat(root.requests).slice(0, 8)
         root.saveState()
@@ -526,7 +571,16 @@ Item {
     var prevTitle = current ? current.id : ""
     reach = v.reach
     installed = v.installed === true
-    listening = v.listening === true
+    var reportedListening = v.listening === true
+    if (reportedListening) {
+      listening = true
+      listenHoldUntil = 0
+    } else if (listenHoldUntil > Date.now()) {
+      listening = true
+    } else {
+      listening = false
+      listenHoldUntil = 0
+    }
     status = v.status || null
     everPolled = true
     if (status) {
@@ -588,8 +642,8 @@ Item {
 
   function loadState(text) {
     var s = Model.parseState(text)
-    if (typeof s.volume === "number") volume = Math.max(0, Math.min(130, Math.round(s.volume)))
-    if (typeof s.songSeconds === "number") songSeconds = Math.max(30, Math.min(580, Math.round(s.songSeconds)))
+    if (typeof s.volume === "number") volume = Model.clampVolume(s.volume)
+    if (typeof s.songSeconds === "number") songSeconds = Model.clampSongSeconds(s.songSeconds)
     if (typeof s.dataDir === "string") dataDir = s.dataDir
     if (typeof s.port === "string" || typeof s.port === "number") port = String(s.port || "")
     if (Array.isArray(s.startCommand) && s.startCommand.every(function(w) { return typeof w === "string" && w.indexOf("\n") < 0 }))

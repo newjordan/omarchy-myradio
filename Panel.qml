@@ -19,7 +19,10 @@ Panel {
   function lookupService() {
     if (radio) return
     var s = bar && bar.shell && typeof bar.shell.serviceFor === "function" ? bar.shell.serviceFor("newjordan.myradio") : null
-    if (s) radio = s
+    if (!s) return
+    radio = s
+    // The panel can open before the service is found. Count it then, or polling stays slow.
+    if (opened) radio.openPanels = radio.openPanels + 1
   }
   onBarChanged: lookupService()
   Timer {
@@ -282,7 +285,9 @@ Panel {
               width: parent.width
               wrapMode: Text.WordWrap
               textFormat: Text.PlainText
-              text: !root.radio ? "" : root.radio.reach === "foreign"
+              text: !root.radio ? "" : root.radio.reach === "badport"
+                ? "The studio port in the plugin settings is not a number from 1 to 65535, so nothing is contacted. Fix \"port\" in the myradio settings file."
+                : root.radio.reach === "foreign"
                 ? "Another account on this computer is using the studio's port, so nothing is sent to it. Stop that program or run the studio on another port."
                 : root.radio.reach === "unverified"
                 ? "Something answers on the studio's port but cannot prove it is your studio, so its replies are ignored and your control code is never sent. Update myradio to 0.5.0 or newer (on the station computer, if you use an SSH tunnel)."
@@ -301,7 +306,7 @@ Panel {
               spacing: Style.space(8)
               Button {
                 visible: root.radio && (root.radio.installed || root.radio.startCommand.length > 0)
-                         && root.radio.reach !== "foreign" && root.radio.reach !== "unverified"
+                         && root.radio.reach !== "foreign" && root.radio.reach !== "unverified" && root.radio.reach !== "badport"
                 text: root.radio && root.radio.winding ? "Winding up…" : "Wind up"
                 iconText: ""
                 iconSpinning: !!root.radio && root.radio.winding
@@ -313,7 +318,7 @@ Panel {
               }
               Button {
                 visible: root.radio && root.radio.installed && root.radio.startCommand.length === 0
-                         && root.radio.reach !== "foreign" && root.radio.reach !== "unverified"
+                         && root.radio.reach !== "foreign" && root.radio.reach !== "unverified" && root.radio.reach !== "badport"
                 text: "Start myradio"
                 iconText: ""
                 bordered: true
@@ -832,7 +837,7 @@ Panel {
                   }
                   PanelActionButton {
                     id: retry
-                    visible: modelData.job_id && (modelData.state === "failed" || modelData.state === "expired" || modelData.state === "interrupted")
+                    visible: modelData.job_id && Model.canRetry(modelData.state)
                     anchors.right: dismiss.left
                     anchors.verticalCenter: parent.verticalCenter
                     iconText: "\uf01e"
@@ -999,6 +1004,7 @@ Panel {
                   if (s.stats && s.stats.on_air_seconds) parts.push(Model.hours(s.stats.on_air_seconds) + " on air")
                   if (root.radio.autopilotOn) parts.push("autopilot")
                   if (s.broadcast === "streaming") parts.push("LIVE")
+                  else if (Model.broadcastLive(s.broadcast)) parts.push("GOING LIVE")
                   return parts.join("  ·  ")
                 }
                 color: root.dim
@@ -1015,7 +1021,7 @@ Panel {
                 Button {
                   visible: !!root.radio && !!root.radio.status && (root.radio.status.running !== true
                            || (root.radio.status.broadcast_ready === true
-                               && ["streaming", "connecting", "retrying"].indexOf(root.radio.status.broadcast) < 0))
+                               && !Model.broadcastLive(root.radio.status.broadcast)))
                   text: root.radio && root.radio.winding ? "Winding up…" : "Wind up"
                   iconText: ""
                   iconSpinning: !!root.radio && root.radio.winding
@@ -1029,9 +1035,11 @@ Panel {
                 Button {
                   id: offAirBtn
                   property bool armed: false
-                  text: armed ? "Shut down?" : "Off air"
+                  text: root.radio && root.radio.stopping ? "Shutting down…" : (armed ? "Shut down?" : "Off air")
                   iconText: ""
+                  iconSpinning: !!root.radio && root.radio.stopping
                   tooltipText: "Stop the broadcast and playout, and shut the studio down"
+                  enabled: !(root.radio && root.radio.stopping)
                   foreground: armed ? (root.bar ? root.bar.urgent : Commons.Color.urgent) : root.fg
                   fontFamily: root.fontFamily
                   fontSize: Style.font.bodySmall
